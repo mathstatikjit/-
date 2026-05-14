@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Анализ Вариационного Ряда</title>
+    
+    <!-- Подключение зависимостей -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    
+    <!-- Шрифты -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; color: #0f172a; }
+        .card { background: #ffffff; border-radius: 1rem; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); border: 1px solid #e2e8f0; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        /* Скроллбар для таблицы */
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 3px; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        .custom-scroll::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        // ================= УТИЛИТЫ РАСЧЕТОВ =================
+        
+        const parseData = (raw) => 
+            raw.split(/[,\s\n;]+/).map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n));
+
+        const buildVariationalTable = (data) => {
+            const freqMap = {};
+            data.forEach(val => { freqMap[val] = (freqMap[val] || 0) + 1; });
+            return Object.entries(freqMap)
+                .map(([val, count]) => ({ variant: Number(val), frequency: count }))
+                .sort((a, b) => a.variant - b.variant);
+        };
+
+        const calculatePopulationStats = (data) => {
+            if (!data || data.length === 0) return null;
+            const N = data.length;
+            const sum = data.reduce((a, b) => a + b, 0);
+            const mean = sum / N;
+            
+            // Генеральная дисперсия: σ² = Σ(xi - μ)² / N
+            const sumSquaredDiffs = data.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0);
+            const variance = sumSquaredDiffs / N;
+            const stdDev = Math.sqrt(variance); // Генеральное СКО
+            
+            return { N, mean, variance, stdDev };
+        };
+
+        // ================= КОМПОНЕНТ 1: InputForm =================
+        const InputForm = ({ onAnalyze }) => {
+            const [rawInput, setRawInput] = useState('4, 2, 5, 1, 3, 4, 2, 5, 4, 3, 2, 4, 5, 1, 3, 4, 2, 3, 5, 4');
+            const [error, setError] = useState('');
+
+            const handleSubmit = () => {
+                const data = parseData(rawInput);
+                if (data.length < 2) {
+                    setError('Введите минимум 2 числовых значения.');
+                    return;
+                }
+                setError('');
+                onAnalyze(data);
+            };
+
+            const loadExample = () => {
+                setRawInput('12, 15, 12, 18, 20, 12, 15, 18, 22, 15, 20, 12, 18, 20, 25, 15, 12, 18, 22, 20');
+                setError('');
+            };
+
+            return (
+                <div className="card p-6 mb-8 animate-fade-in">
+                    <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <span className="bg-blue-100 text-blue-600 p-2 rounded-lg">📥</span> Ввод данных
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-slate-600 mb-2">Числовой массив (через запятую, пробел или с новой строки)</label>
+                            <textarea 
+                                value={rawInput}
+                                onChange={(e) => setRawInput(e.target.value)}
+                                className="w-full h-28 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-slate-700 font-mono text-sm resize-none bg-slate-50"
+                                placeholder="Например: 12, 15, 12, 18, 20, 12..."
+                            />
+                        </div>
+                        <div className="flex flex-col justify-end space-y-3">
+                            <button onClick={handleSubmit} className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-semibold rounded-lg shadow transition-all active:scale-[0.98]">
+                                📊 Построить ряд
+                            </button>
+                            <button onClick={loadExample} className="w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium rounded-lg transition-colors text-sm border border-slate-200">
+                                🎲 Загрузить пример
+                            </button>
+                        </div>
+                    </div>
+                    {error && <div className="mt-4 p-3 bg-red-50 text-red-600 text-sm rounded-lg border border-red-200 animate-fade-in">⚠️ {error}</div>}
+                </div>
+            );
+        };
+
+        // ================= КОМПОНЕНТ 2: StatisticsDisplay =================
+        const StatisticsDisplay = ({ stats }) => {
+            if (!stats) return null;
+
+            const StatCard = ({ title, value, subtitle, color, bg }) => (
+                <div className={`p-5 rounded-xl border ${bg} shadow-sm hover:shadow-md transition-all`}>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">{title}</p>
+                    <p className={`text-2xl font-bold ${color}`}>{value}</p>
+                    {subtitle && <p className="text-xs text-slate-500 mt-1">{subtitle}</p>}
+                </div>
+            );
+
+            return (
+                <div className="mb-8 animate-fade-in" style={{animationDelay: '0.1s'}}>
+                    <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <span className="bg-emerald-100 text-emerald-600 p-2 rounded-lg">📐</span> Генеральные параметры совокупности
+                    </h2>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <StatCard title="Объём совокупности (N)" value={stats.N} subtitle="Всего наблюдений" color="text-slate-800" bg="bg-white" />
+                        <StatCard title="Среднее значение (μ)" value={stats.mean.toFixed(3)} subtitle="Математическое ожидание" color="text-blue-600" bg="bg-white" />
+                        <StatCard title="Дисперсия (σ²)" value={stats.variance.toFixed(3)} subtitle="Генеральная формула (делится на N)" color="text-violet-600" bg="bg-white" />
+                        <StatCard title="СКО (σ)" value={stats.stdDev.toFixed(3)} subtitle="Генеральное отклонение" color="text-amber-600" bg="bg-white" />
+                    </div>
+                </div>
+            );
+        };
+
+        // ================= КОМПОНЕНТ 3: ChartContainer =================
+        const ChartContainer = ({ tableData }) => {
+            const canvasRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            useEffect(() => {
+                if (!tableData || tableData.length === 0) return;
+                const ctx = canvasRef.current.getContext('2d');
+
+                // Уничтожаем старый график перед созданием нового
+                if (chartInstance.current) {
+                    chartInstance.current.destroy();
+                }
+
+                const labels = tableData.map(d => d.variant);
+                const frequencies = tableData.map(d => d.frequency);
+
+                chartInstance.current = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Частота (ni)',
+                            data: frequencies,
+                            backgroundColor: 'rgba(59, 130, 246, 0.45)',
+                            borderColor: 'rgba(37, 99, 235, 0.85)',
+                            borderWidth: 1.5,
+                            borderRadius: 4,
+                            barPercentage: 1.0, // Столбцы вплотную (стиль гистограммы)
+                            categoryPercentage: 1.0,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: {
+                                backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                                titleColor: '#f8fafc',
+                                bodyColor: '#cbd5e1',
+                                borderColor: 'rgba(255,255,255,0.1)',
+                                borderWidth: 1,
+                                cornerRadius: 8,
+                                padding: 12,
+                                titleFont: { family: 'Inter', size: 13, weight: '600' },
+                                bodyFont: { family: 'Inter', size: 12 },
+                                callbacks: {
+                                    title: (items) => `Варианта xi: ${items[0].label}`,
+                                    label: (item) => `Частота ni: ${item.raw}`,
+                                    afterLabel: () => `Наведите для точного значения`
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                ticks: { stepSize: 1, font: { family: 'Inter' } },
+                                grid: { color: '#f1f5f9' },
+                                border: { color: '#e2e8f0' },
+                                title: { display: true, text: 'Частота (ni)', font: { family: 'Inter', weight: '500' }, color: '#64748b' }
+                            },
+                            x: {
+                                ticks: { font: { family: 'Inter' } },
+                                grid: { display: false },
+                                border: { color: '#e2e8f0' },
+                                title: { display: true, text: 'Варианты (xi)', font: { family: 'Inter', weight: '500' }, color: '#64748b' }
+                            }
+                        }
+                    }
+                });
+
+                return () => {
+                    if (chartInstance.current) chartInstance.current.destroy();
+                };
+            }, [tableData]);
+
+            return (
+                <div className="animate-fade-in" style={{animationDelay: '0.2s'}}>
+                    <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                        <span className="bg-purple-100 text-purple-600 p-2 rounded-lg">📊</span> Гистограмма и вариационная таблица
+                    </h2>
+                    <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+                        {/* График */}
+                        <div className="lg:col-span-3 card p-5">
+                            <div className="h-[340px] w-full">
+                                <canvas ref={canvasRef}></canvas>
+                            </div>
+                        </div>
+                        
+                        {/* Таблица */}
+                        <div className="lg:col-span-2 card overflow-hidden flex flex-col">
+                            <div className="p-4 bg-slate-50 border-b border-slate-200">
+                                <h3 className="font-semibold text-slate-700">Вариационная таблица</h3>
+                            </div>
+                            <div className="overflow-y-auto custom-scroll max-h-[340px] p-1">
+                                <table className="w-full text-sm text-left border-collapse">
+                                    <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 z-10">
+                                        <tr>
+                                            <th className="px-4 py-3 border-b border-slate-200 text-center w-12">№</th>
+                                            <th className="px-4 py-3 border-b border-slate-200 text-center">xi</th>
+                                            <th className="px-4 py-3 border-b border-slate-200 text-center">ni</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {tableData.map((row, i) => (
+                                            <tr key={i} className="hover:bg-blue-50 transition-colors group">
+                                                <td className="px-4 py-2.5 text-center text-slate-500 font-mono text-xs">{i + 1}</td>
+                                                <td className="px-4 py-2.5 text-center font-medium text-slate-700 group-hover:text-blue-700">{row.variant}</td>
+                                                <td className="px-4 py-2.5 text-center">
+                                                    <span className="inline-flex items-center justify-center w-8 h-6 rounded bg-blue-100 text-blue-700 font-bold text-xs">
+                                                        {row.frequency}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ================= ГЛАВНОЕ ПРИЛОЖЕНИЕ =================
+        const App = () => {
+            const [stats, setStats] = useState(null);
+            const [tableData, setTableData] = useState(null);
+
+            const handleAnalyze = (parsedData) => {
+                setStats(calculatePopulationStats(parsedData));
+                setTableData(buildVariationalTable(parsedData));
+            };
+
+            return (
+                <div className="min-h-screen py-8 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+                    <header className="mb-8 text-center animate-fade-in">
+                        <h1 className="text-3xl sm:text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-violet-600 mb-2">
+                            Анализ Вариационного Ряда
+                        </h1>
+                        <p className="text-slate-500 max-w-2xl mx-auto">Введите числовой массив для автоматического построения дискретного вариационного ряда и расчета генеральных параметров.</p>
+                    </header>
+
+                    <InputForm onAnalyze={handleAnalyze} />
+
+                    {stats && tableData && (
+                        <>
+                            <StatisticsDisplay stats={stats} />
+                            <ChartContainer tableData={tableData} />
+                        </>
+                    )}
+
+                    {!stats && !tableData && (
+                        <div className="text-center py-12 text-slate-400 animate-fade-in">
+                            <div className="text-4xl mb-3">📈</div>
+                            <p className="text-lg">Введите данные выше и нажмите «Построить ряд» для начала анализа.</p>
+                        </div>
+                    )}
+
+                    <footer className="mt-16 pt-6 border-t border-slate-200 text-center text-slate-400 text-xs animate-fade-in">
+                        React 18 • Chart.js 4 • Tailwind CSS • Расчет по генеральной совокупности (σ², σ) • {new Date().getFullYear()}
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
