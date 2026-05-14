@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Накопленная частота</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+    <style>
+        * { font-family: 'Inter', sans-serif; }
+        body {
+            background: #f8fafc;
+            min-height: 100vh;
+            color: #0f172a;
+        }
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in-up { animation: fadeInUp 0.5s ease-out forwards; }
+        .animate-fade-in-up-delay { animation: fadeInUp 0.5s ease-out 0.15s forwards; opacity: 0; }
+        .animate-fade-in-up-delay2 { animation: fadeInUp 0.5s ease-out 0.3s forwards; opacity: 0; }
+        .card {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+        }
+        .card-header { border-bottom: 1px solid #f1f5f9; }
+        .table-header { background: #f8fafc; }
+        .table-row-hover:hover { background: #f1f5f9; }
+        .gradient-text {
+            background: linear-gradient(135deg, #2563eb, #7c3aed, #db2777);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        /* ──────────────── Утилиты ──────────────── */
+
+        function parseNumbers(raw) {
+            return raw
+                .split(/[,\s\n;]+/)
+                .map(s => s.trim())
+                .filter(Boolean)
+                .map(Number)
+                .filter(n => !isNaN(n));
+        }
+
+        function buildIntervals(data, k) {
+            const min = Math.min(...data);
+            const max = Math.max(...data);
+            const h = (max - min) / k;
+            const eps = h * 1e-9;
+
+            const intervals = [];
+            for (let i = 0; i < k; i++) {
+                const lo = min + i * h;
+                const hi = min + (i + 1) * h;
+                intervals.push({ lo, hi });
+            }
+
+            const freq = intervals.map(({ lo, hi }, idx) => {
+                const count = data.filter(v => {
+                    if (idx === intervals.length - 1) return v >= lo && v <= hi;
+                    return v >= lo && v < hi;
+                }).length;
+                return count;
+            });
+
+            let cum = 0;
+            const cumFreq = freq.map(f => (cum += f, cum));
+            const total = data.length;
+            const relFreq = freq.map(f => +(f / total).toFixed(6));
+            const cumRel = cumFreq.map(c => +(c / total).toFixed(6));
+
+            return { min, max, h, intervals, freq, cumFreq, relFreq, cumRel, total };
+        }
+
+        function stats(data) {
+            const n = data.length;
+            const sorted = [...data].sort((a, b) => a - b);
+            const sum = data.reduce((a, b) => a + b, 0);
+            const mean = sum / n;
+            const variance = data.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+            const std = Math.sqrt(variance);
+            const median = n % 2 === 0
+                ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+                : sorted[Math.floor(n / 2)];
+            const q1 = sorted[Math.floor(n * 0.25)];
+            const q3 = sorted[Math.floor(n * 0.75)];
+            const skewness = data.reduce((a, b) => a + ((b - mean) / std) ** 3, 0) / n;
+            const kurtosis = data.reduce((a, b) => a + ((b - mean) / std) ** 4, 0) / n - 3;
+
+            return { n, min: sorted[0], max: sorted[n - 1], mean, std, median, q1, q3, variance, skewness, kurtosis };
+        }
+
+        function fmt(v, d = 2) {
+            return Number.isInteger(v) ? v.toString() : v.toFixed(d);
+        }
+
+        /* ──────────────── Компоненты ──────────────── */
+
+        function StatCard({ label, value, icon, color }) {
+            return (
+                <div className="card p-5 hover:shadow-md transition-all duration-300 hover:scale-[1.02]">
+                    <div className="flex items-center gap-3 mb-2">
+                        <span className="text-2xl">{icon}</span>
+                        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</span>
+                    </div>
+                    <div className={`text-2xl font-bold ${color}`}>{value}</div>
+                </div>
+            );
+        }
+
+        function IntervalTable({ result }) {
+            const { intervals, freq, cumFreq, relFreq, cumRel, total } = result;
+
+            // Транспонированная структура: метрики → строки, интервалы → столбцы
+            const rows = [
+                { label: '№', values: intervals.map((_, i) => i + 1), align: 'center' },
+                { label: 'Интервал', values: intervals.map((iv, i) => 
+                    `[${fmt(iv.lo)}; ${i === intervals.length - 1 ? fmt(iv.hi) : fmt(iv.hi)})`
+                ), align: 'left', mono: true },
+                { label: 'Частота', values: freq, align: 'center' },
+                { label: 'Накопленная частота', values: cumFreq, align: 'center' },
+                { label: 'Отн. частота', values: relFreq.map(r => (r * 100).toFixed(1) + '%'), align: 'center' },
+                { label: 'Накоп. отн. частота', values: cumRel.map(c => (c * 100).toFixed(1) + '%'), align: 'center' },
+            ];
+
+            return (
+                <div className="animate-fade-in-up">
+                    <div className="flex items-center gap-3 mb-5">
+                        <span className="text-3xl">📊</span>
+                        <h2 className="text-2xl font-bold text-slate-800">Интервальный ряд</h2>
+                    </div>
+                    <div className="card overflow-hidden">
+                        <div className="overflow-x-auto">
+                            <table className="w-full border-collapse">
+                                <thead>
+                                    <tr className="table-header border-b border-slate-200">
+                                        <th className="px-5 py-4 text-left text-xs font-bold uppercase tracking-wider text-slate-500 bg-slate-50 border-r border-slate-100 min-w-[160px]">Показатель</th>
+                                        {intervals.map((_, i) => (
+                                            <th key={i} className="px-4 py-4 text-center text-xs font-bold uppercase tracking-wider text-blue-600 border-r border-slate-100 last:border-r-0 min-w-[100px]">
+                                                Интервал {i + 1}
+                                            </th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {rows.map((row, rIdx) => (
+                                        <tr key={rIdx} className="border-b border-slate-100 last:border-b-0 table-row-hover transition-colors">
+                                            <td className={`px-5 py-3.5 font-semibold text-slate-700 bg-slate-50/50 border-r border-slate-100 text-sm`}>
+                                                {row.label}
+                                            </td>
+                                            {row.values.map((val, cIdx) => (
+                                                <td key={cIdx} className={`px-4 py-3.5 text-sm text-slate-800 border-r border-slate-50 last:border-r-0 ${row.align === 'center' ? 'text-center' : row.align} ${row.mono ? 'font-mono' : 'font-medium'}`}>
+                                                    {val}
+                                                </td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                                <tfoot>
+                                    <tr className="border-t-2 border-slate-200 bg-slate-50">
+                                        <td className="px-5 py-3.5 font-bold text-slate-800 bg-slate-50/50 border-r border-slate-100 text-sm">Итого</td>
+                                        {intervals.map((_, i) => (
+                                            <td key={i} className="px-4 py-3.5 text-center font-bold text-slate-600 border-r border-slate-100 last:border-r-0 text-sm"></td>
+                                        ))}
+                                    </tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                        <div className="px-5 py-3 bg-slate-50 border-t border-slate-100 flex justify-between text-sm text-slate-600">
+                            <span>Всего наблюдений: <b className="text-slate-800">{total}</b></span>
+                            <span>Шаг интервала: <b className="text-slate-800">{fmt(result.h, 3)}</b></span>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function ChartSection({ result }) {
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+            const { intervals, freq, cumFreq, cumRel } = result;
+
+            const labels = intervals.map((iv, i) => `${fmt(iv.lo)}–${fmt(iv.hi)}`);
+
+            useEffect(() => {
+                if (chartInstance.current) chartInstance.current.destroy();
+
+                const ctx = chartRef.current.getContext('2d');
+                chartInstance.current = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [
+                            {
+                                label: 'Частота',
+                                data: freq,
+                                backgroundColor: 'rgba(37, 99, 235, 0.35)',
+                                borderColor: 'rgba(37, 99, 235, 0.8)',
+                                borderWidth: 2,
+                                borderRadius: 6,
+                                borderSkipped: false,
+                                order: 2,
+                                yAxisID: 'y',
+                            },
+                            {
+                                label: 'Накопленная частота',
+                                data: cumFreq,
+                                type: 'line',
+                                borderColor: 'rgba(124, 58, 237, 0.9)',
+                                backgroundColor: 'rgba(124, 58, 237, 0.08)',
+                                borderWidth: 3,
+                                pointBackgroundColor: 'rgba(124, 58, 237, 1)',
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 2,
+                                pointRadius: 5,
+                                pointHoverRadius: 8,
+                                tension: 0.3,
+                                fill: true,
+                                order: 1,
+                                yAxisID: 'y',
+                            },
+                            {
+                                label: 'Накопленная отн. частота',
+                                data: cumRel.map(c => +(c * 100).toFixed(2)),
+                                type: 'line',
+                                borderColor: 'rgba(217, 119, 6, 0.9)',
+                                backgroundColor: 'transparent',
+                                borderWidth: 3,
+                                pointBackgroundColor: 'rgba(217, 119, 6, 1)',
+                                pointBorderColor: '#ffffff',
+                                pointBorderWidth: 2,
+                                pointRadius: 5,
+                                pointHoverRadius: 8,
+                                tension: 0.3,
+                                borderDash: [6, 4],
+                                order: 0,
+                                yAxisID: 'yPercent',
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: 'index', intersect: false },
+                        plugins: {
+                            legend: {
+                                labels: { color: '#475569', font: { family: 'Inter', size: 12, weight: '500' }, usePointStyle: true, padding: 20 }
+                            },
+                            tooltip: {
+                                backgroundColor: '#ffffff',
+                                titleColor: '#0f172a',
+                                bodyColor: '#334155',
+                                borderColor: '#e2e8f0',
+                                borderWidth: 1,
+                                cornerRadius: 10,
+                                padding: 12,
+                                titleFont: { family: 'Inter', size: 13, weight: '600' },
+                                bodyFont: { family: 'Inter', size: 12 },
+                                displayColors: true,
+                                boxPadding: 6,
+                            }
+                        },
+                        scales: {
+                            x: {
+                                ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } },
+                                grid: { color: '#f1f5f9' },
+                                border: { color: '#e2e8f0' }
+                            },
+                            y: {
+                                position: 'left',
+                                beginAtZero: true,
+                                ticks: { color: '#64748b', font: { family: 'Inter', size: 11 } },
+                                grid: { color: '#f8fafc' },
+                                border: { color: '#e2e8f0' },
+                                title: { display: true, text: 'Частота', color: '#475569', font: { family: 'Inter', size: 12, weight: '600' } }
+                            },
+                            yPercent: {
+                                position: 'right',
+                                beginAtZero: true,
+                                max: 100,
+                                ticks: { color: '#d97706', font: { family: 'Inter', size: 11 }, callback: v => v + '%' },
+                                grid: { drawOnChartArea: false },
+                                border: { color: '#e2e8f0' },
+                                title: { display: true, text: 'Накопленная %', color: '#d97706', font: { family: 'Inter', size: 12, weight: '600' } }
+                            }
+                        }
+                    }
+                });
+
+                return () => { if (chartInstance.current) chartInstance.current.destroy(); };
+            }, [labels, freq, cumFreq, cumRel]);
+
+            return (
+                <div className="animate-fade-in-up-delay">
+                    <div className="flex items-center gap-3 mb-5">
+                        <span className="text-3xl">📈</span>
+                        <h2 className="text-2xl font-bold text-slate-800">Визуализация</h2>
+                    </div>
+                    <div className="card p-6">
+                        <div style={{ height: 440 }}>
+                            <canvas ref={chartRef} />
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        /* ──────────────── Главный App ──────────────── */
+
+        function App() {
+            const [rawInput, setRawInput] = useState(
+                '12, 15, 18, 21, 22, 25, 28, 30, 31, 33, 35, 37, 39, 40, 42, 45, 47, 50, 52, 55, 58, 60, 62, 65, 68, 70, 72, 75, 78, 80, 82, 85, 88, 90, 92, 95, 98, 100, 105, 110'
+            );
+            const [kInput, setKInput] = useState('7');
+            const [result, setResult] = useState(null);
+            const [st, setSt] = useState(null);
+            const [error, setError] = useState('');
+
+            const handleAnalyze = () => {
+                const data = parseNumbers(rawInput);
+                const k = parseInt(kInput);
+
+                if (data.length < 2) { setError('Введите минимум 2 числа.'); return; }
+                if (!k || k < 2) { setError('Количество интервалов должно быть ≥ 2.'); return; }
+                if (k > data.length) { setError('Количество интервалов не может превышать число данных.'); return; }
+
+                setError('');
+                const res = buildIntervals(data, k);
+                setResult(res);
+                setSt(stats(data));
+            };
+
+            const handleExample = (preset) => {
+                const examples = {
+                    uniform: Array.from({ length: 50 }, () => Math.round(Math.random() * 200 + 10)),
+                    normal: Array.from({ length: 100 }, () => {
+                        let u = 0, v = 0;
+                        while (!u) u = Math.random();
+                        while (!v) v = Math.random();
+                        return Math.round(50 + Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * 15);
+                    }),
+                    skewed: Array.from({ length: 60 }, () => Math.round(Math.pow(Math.random(), 2) * 100 + 5)),
+                };
+                setRawInput(examples[preset].join(', '));
+                setResult(null);
+                setSt(null);
+            };
+
+            return (
+                <div className="min-h-screen px-4 py-8 sm:px-6 lg:px-12">
+                    {/* Header */}
+                    <header className="max-w-7xl mx-auto mb-10 text-center animate-fade-in-up">
+                        <h1 className="text-4xl sm:text-5xl font-black gradient-text mb-3">
+                            Накопленная частота
+                        </h1>
+                        <p className="text-slate-500 text-lg max-w-2xl mx-auto">
+                            Введите числовые данные, задайте количество интервалов — получите полную статистическую картину с визуализацией
+                        </p>
+                    </header>
+
+                    {/* Input Panel */}
+                    <div className="max-w-7xl mx-auto mb-8 animate-fade-in-up">
+                        <div className="card p-6 sm:p-8">
+                            <div className="flex items-center gap-3 mb-5">
+                                <span className="text-2xl">⚙️</span>
+                                <h2 className="text-xl font-bold text-slate-800">Ввод данных</h2>
+                            </div>
+
+                            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                                <div className="lg:col-span-3">
+                                    <label className="block text-sm font-semibold text-slate-600 mb-2">
+                                        Числовые данные (через запятую, пробел или с новой строки)
+                                    </label>
+                                    <textarea
+                                        value={rawInput}
+                                        onChange={e => setRawInput(e.target.value)}
+                                        rows={4}
+                                        className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-800 text-sm font-mono placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 resize-none transition-all"
+                                        placeholder="Например: 12, 15, 18, 21, 25, 30, 35, 40, 45, 50"
+                                    />
+                                    <div className="flex gap-2 mt-3 flex-wrap">
+                                        <span className="text-xs text-slate-400 mr-2 self-center">Примеры:</span>
+                                        <button onClick={() => handleExample('uniform')} className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs text-slate-600 hover:bg-slate-200 transition-colors">🎲 Равномерные</button>
+                                        <button onClick={() => handleExample('normal')} className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs text-slate-600 hover:bg-slate-200 transition-colors">📊 Нормальные</button>
+                                        <button onClick={() => handleExample('skewed')} className="px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-xs text-slate-600 hover:bg-slate-200 transition-colors">📉 Скошенные</button>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col gap-4">
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-600 mb-2">
+                                            Количество интервалов (k)
+                                        </label>
+                                        <input
+                                            type="number"
+                                            min="2"
+                                            value={kInput}
+                                            onChange={e => setKInput(e.target.value)}
+                                            className="w-full bg-white border border-slate-300 rounded-xl px-4 py-3 text-slate-800 text-lg font-bold text-center focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-all"
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={handleAnalyze}
+                                        className="w-full py-3.5 rounded-xl bg-gradient-to-r from-blue-600 to-violet-600 text-white font-bold text-sm uppercase tracking-wider hover:from-blue-500 hover:to-violet-500 transition-all duration-300 hover:shadow-lg hover:shadow-blue-500/20 active:scale-[0.98]"
+                                    >
+                                        🚀 Анализировать
+                                    </button>
+                                    {error && (
+                                        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-red-600 text-sm text-center animate-fade-in-up">
+                                            ⚠️ {error}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Results */}
+                    {result && st && (
+                        <div className="max-w-7xl mx-auto space-y-8">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 animate-fade-in-up-delay">
+                                <StatCard label="Объём" value={st.n} icon="📋" color="text-blue-600" />
+                                <StatCard label="Мин" value={fmt(st.min)} icon="📉" color="text-slate-600" />
+                                <StatCard label="Макс" value={fmt(st.max)} icon="📈" color="text-slate-600" />
+                                <StatCard label="Среднее" value={fmt(st.mean)} icon="📐" color="text-violet-600" />
+                                <StatCard label="Медиана" value={fmt(st.median)} icon="🎯" color="text-amber-600" />
+                                <StatCard label="СКО" value={fmt(st.std)} icon="📏" color="text-emerald-600" />
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 animate-fade-in-up-delay2">
+                                <div className="card p-4 text-center">
+                                    <div className="text-xs text-slate-500 mb-1">Дисперсия</div>
+                                    <div className="text-lg font-bold text-violet-600">{fmt(st.variance, 4)}</div>
+                                </div>
+                                <div className="card p-4 text-center">
+                                    <div className="text-xs text-slate-500 mb-1">Q1 (25%)</div>
+                                    <div className="text-lg font-bold text-emerald-600">{fmt(st.q1)}</div>
+                                </div>
+                                <div className="card p-4 text-center">
+                                    <div className="text-xs text-slate-500 mb-1">Q3 (75%)</div>
+                                    <div className="text-lg font-bold text-amber-600">{fmt(st.q3)}</div>
+                                </div>
+                                <div className="card p-4 text-center">
+                                    <div className="text-xs text-slate-500 mb-1">Асимметрия</div>
+                                    <div className="text-lg font-bold text-blue-600">{fmt(st.skewness, 3)}</div>
+                                </div>
+                            </div>
+
+                            <IntervalTable result={result} />
+                            <ChartSection result={result} />
+                        </div>
+                    )}
+
+                    <footer className="max-w-7xl mx-auto mt-16 pb-6 text-center">
+                        <p className="text-slate-400 text-xs">
+                            Накопленная частота • React + Chart.js • {new Date().getFullYear()}
+                        </p>
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
